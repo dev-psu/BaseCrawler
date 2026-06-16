@@ -1,60 +1,42 @@
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from db.connection import SessionLocal
-from db.models import TeamEntity, GameEntity
-from models.team import Team
+from db.models import GameEntity
 from models.game import Game
 
 
-def upsert_teams(teams: list[Team]) -> None:
-    with SessionLocal() as session:
-        for team in teams:
-            existing = session.query(TeamEntity).filter_by(code=team.code).first()
-            if existing:
-                existing.name = team.name
-                existing.short_name = team.short_name
-            else:
-                session.add(TeamEntity(code=team.code, name=team.name, short_name=team.short_name))
-        session.commit()
-
-
 def upsert_games(games: list[Game]) -> int:
-    with SessionLocal() as session:
-        team_map: dict[str, int] = {
-            t.code: t.id for t in session.query(TeamEntity).all()
+    if not games:
+        return 0
+
+    rows = [
+        {
+            "season": game.season,
+            "game_type": game.game_type,
+            "game_date": game.game_date,
+            "game_time": game.game_time,
+            "home_team": game.home_team_code,
+            "away_team": game.away_team_code,
+            "venue": game.venue,
+            "home_score": game.home_score,
+            "away_score": game.away_score,
+            "status": game.status,
+            "game_number": game.game_number,
         }
+        for game in games
+    ]
 
-        saved = 0
-        for game in games:
-            home_id = team_map.get(game.home_team_code)
-            away_id = team_map.get(game.away_team_code)
-            if not home_id or not away_id:
-                continue
+    stmt = mysql_insert(GameEntity).values(rows)
+    stmt = stmt.on_duplicate_key_update(
+        game_time=stmt.inserted.game_time,
+        venue=stmt.inserted.venue,
+        home_score=stmt.inserted.home_score,
+        away_score=stmt.inserted.away_score,
+        status=stmt.inserted.status,
+        game_number=stmt.inserted.game_number,
+    )
 
-            existing = session.query(GameEntity).filter_by(
-                season=game.season,
-                game_date=game.game_date,
-                home_team_id=home_id,
-                away_team_id=away_id,
-            ).first()
-
-            if existing:
-                existing.game_time = game.game_time
-                existing.venue = game.venue
-                existing.home_score = game.home_score
-                existing.away_score = game.away_score
-                existing.status = game.status
-            else:
-                session.add(GameEntity(
-                    season=game.season,
-                    game_date=game.game_date,
-                    game_time=game.game_time,
-                    home_team_id=home_id,
-                    away_team_id=away_id,
-                    venue=game.venue,
-                    home_score=game.home_score,
-                    away_score=game.away_score,
-                    status=game.status,
-                ))
-            saved += 1
-
+    with SessionLocal() as session:
+        session.execute(stmt)
         session.commit()
-        return saved
+
+    return len(rows)

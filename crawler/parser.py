@@ -1,97 +1,120 @@
+import re
 from datetime import date, time
-from bs4 import BeautifulSoup
-from models.game import Game, GameStatus
-from models.team import Team
+from bs4 import BeautifulSoup, Tag
+from models.game import Game, GameStatus, GameType
 
-# KBO 사이트 표기명 → 내부 팀 코드
-# 실제 사이트 크롤링 후 팀명 표기 확인 필요
 TEAM_NAME_TO_CODE: dict[str, str] = {
-    "두산": "OB",
+    "두산": "DOOSAN",
     "LG": "LG",
     "KT": "KT",
     "SSG": "SSG",
     "NC": "NC",
     "KIA": "KIA",
-    "롯데": "LT",
-    "삼성": "SS",
-    "한화": "HH",
-    "키움": "KW",
+    "롯데": "LOTTE",
+    "삼성": "SAMSUNG",
+    "한화": "HANWHA",
+    "키움": "KIWOOM",
 }
 
-KNOWN_TEAMS: list[Team] = [
-    Team(code="OB",  name="두산 베어스",  short_name="두산"),
-    Team(code="LG",  name="LG 트윈스",   short_name="LG"),
-    Team(code="KT",  name="KT 위즈",     short_name="KT"),
-    Team(code="SSG", name="SSG 랜더스",  short_name="SSG"),
-    Team(code="NC",  name="NC 다이노스", short_name="NC"),
-    Team(code="KIA", name="KIA 타이거즈",short_name="KIA"),
-    Team(code="LT",  name="롯데 자이언츠",short_name="롯데"),
-    Team(code="SS",  name="삼성 라이온즈",short_name="삼성"),
-    Team(code="HH",  name="한화 이글스", short_name="한화"),
-    Team(code="KW",  name="키움 히어로즈",short_name="키움"),
-]
+_PLAY_RE = re.compile(r"^([가-힣A-Za-z]+)(\d*)vs(\d*)([가-힣A-Za-z]+)$")
 
 
-def parse_schedule(html: str, season: int, year: int, month: int) -> list[Game]:
+def parse_schedule(html: str, season: int, year: int, month: int, game_type: GameType) -> list[Game]:
     soup = BeautifulSoup(html, "html.parser")
     games: list[Game] = []
 
-    # KBO 사이트 일정 테이블 id — 실제 HTML 확인 후 조정 필요
     table = soup.select_one("#tblScheduleList")
     if not table:
         return games
 
     current_day: int | None = None
+    # 더블헤더 추적: (game_date, home_code, away_code) → 당일 경기 순번
+    game_counter: dict[tuple, int] = {}
 
     for row in table.select("tr"):
-        date_cell = row.select_one("td.date, td.num")
-        if date_cell:
-            text = date_cell.get_text(strip=True).split("(")[0].strip()
-            try:
-                current_day = int(text)
-            except ValueError:
-                pass
-
-        if current_day is None:
-            continue
-
         cells = row.select("td")
-        if len(cells) < 5:
+        if not cells:
             continue
 
-        game = _parse_row(cells, date(year, month, current_day), season)
+        day_cell = row.select_one("td.day")
+        if day_cell:
+            current_day = _parse_day(day_cell.get_text(strip=True))
+            data_cells = cells[1:]
+        else:
+            data_cells = cells
+
+        if current_day is None or len(data_cells) < 8:
+            continue
+
+        game_date = date(year, month, current_day)
+        game = _parse_row(data_cells, game_date, season, game_type, game_counter)
         if game:
             games.append(game)
 
     return games
 
 
-def _parse_row(cells: list, game_date: date, season: int) -> Game | None:
-    time_text  = cells[0].get_text(strip=True)
-    away_text  = cells[1].get_text(strip=True)
-    score_text = cells[2].get_text(strip=True)
-    home_text  = cells[3].get_text(strip=True)
-    venue_text = cells[4].get_text(strip=True)
+def _parse_day(text: str) -> int | None:
+    match = re.match(r"\d+\.(\d+)", text)
+    if match:
+        return int(match.group(1))
+    return None
 
-    away_code = TEAM_NAME_TO_CODE.get(away_text)
-    home_code = TEAM_NAME_TO_CODE.get(home_text)
-    if not away_code or not home_code:
+
+def _parse_row(
+    cells: list[Tag],
+    game_date: date,
+    season: int,
+    game_type: GameType,
+    game_counter: dict[tuple, int],
+) -> Game | None:
+    time_text  = cells[0].get_text(strip=True)
+    play_text  = cells[1].get_text(strip=True)
+    relay_text = cells[2].get_text(strip=True)
+    venue_text = cells[6].get_text(strip=True)
+    notes_text = cells[7].get_text(strip=True)
+
+    parsed = _parse_play(play_text)
+    if parsed is None:
         return None
 
-    game_time = _parse_time(time_text)
-    home_score, away_score, status = _parse_score(score_text)
+    away_code, away_score, home_score, home_code = parsed
+
+    key = (game_date, home_code, away_code)
+    game_counter[key] = game_counter.get(key, 0) + 1
+    game_number = game_counter[key]
 
     return Game(
         season=season,
+        game_type=game_type,
         game_date=game_date,
-        game_time=game_time,
+        game_time=_parse_time(time_text),
         home_team_code=home_code,
         away_team_code=away_code,
         venue=venue_text or None,
         home_score=home_score,
         away_score=away_score,
-        status=status,
+        status=_parse_status(relay_text, away_score, notes_text),
+        game_number=game_number,
     )
+
+
+def _parse_play(text: str) -> tuple[str, int | None, int | None, str] | None:
+    match = _PLAY_RE.match(text)
+    if not match:
+        return None
+
+    away_name, away_score_str, home_score_str, home_name = match.groups()
+
+    away_code = TEAM_NAME_TO_CODE.get(away_name)
+    home_code = TEAM_NAME_TO_CODE.get(home_name)
+    if not away_code or not home_code:
+        return None
+
+    away_score = int(away_score_str) if away_score_str else None
+    home_score = int(home_score_str) if home_score_str else None
+
+    return away_code, away_score, home_score, home_code
 
 
 def _parse_time(text: str) -> time | None:
@@ -102,20 +125,11 @@ def _parse_time(text: str) -> time | None:
         return None
 
 
-def _parse_score(text: str) -> tuple[int | None, int | None, GameStatus]:
-    if not text or text == "-":
-        return None, None, GameStatus.SCHEDULED
-    if "취소" in text or "우천" in text:
-        return None, None, GameStatus.CANCELED
-    if "연기" in text:
-        return None, None, GameStatus.POSTPONED
-
-    # 완료된 경기: "5:3" 형태
-    if ":" in text:
-        try:
-            away_str, home_str = text.split(":")
-            return int(home_str.strip()), int(away_str.strip()), GameStatus.COMPLETED
-        except ValueError:
-            pass
-
-    return None, None, GameStatus.SCHEDULED
+def _parse_status(relay_text: str, away_score: int | None, notes_text: str) -> GameStatus:
+    if "취소" in notes_text:
+        return GameStatus.CANCELED
+    if "연기" in notes_text:
+        return GameStatus.POSTPONED
+    if relay_text == "리뷰" and away_score is not None:
+        return GameStatus.COMPLETED
+    return GameStatus.SCHEDULED
