@@ -6,26 +6,28 @@
 kbo-crawler/
 ├── crawler/
 │   ├── kbo.py        # Playwright 기반 HTML 수집
-│   └── parser.py     # BeautifulSoup 기반 파싱
+│   ├── parser.py     # BeautifulSoup 기반 파싱
+│   └── naver.py      # 네이버 스포츠 API 클라이언트
 ├── db/
 │   ├── connection.py # SQLAlchemy 엔진/세션
-│   ├── models.py     # GameEntity (SQLAlchemy ORM)
+│   ├── models.py     # GameEntity, GameDetailEntity (SQLAlchemy ORM)
 │   └── repository.py # upsert 로직
 ├── models/
 │   ├── game.py       # Game 도메인 모델 (dataclass)
 │   └── team.py       # Team 모델
 ├── docs/             # 이 문서들
 ├── main.py           # 진입점 + CLI
-└── scheduler.py      # APScheduler (매일 08:00)
+└── scheduler.py      # 3-트랙 스케줄러
 ```
 
 ## 기술 스택
 
 | 항목 | 선택 |
 |---|---|
-| 언어 | Python 3.14 |
+| 언어 | Python 3.12 |
 | 브라우저 자동화 | Playwright (sync API) |
 | HTML 파싱 | BeautifulSoup4 |
+| HTTP 클라이언트 | requests |
 | ORM | SQLAlchemy 2.0 |
 | DB | MySQL (BaseLog와 공유) |
 | 스케줄러 | APScheduler |
@@ -54,6 +56,6 @@ python main.py --type EXHIBITION
 # 특정 월만
 python main.py --type REGULAR --month 6
 
-# 스케줄러 실행
+# 스케줄러 실행 (3-트랙)
 python scheduler.py
 ```

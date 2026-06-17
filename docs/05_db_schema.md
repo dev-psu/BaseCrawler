@@ -2,7 +2,7 @@
 
 ## game 테이블
 
-BaseLog Flyway 마이그레이션 기준 (V4 + V5):
+BaseLog Flyway 마이그레이션 기준 (V4 + V6 + V7):
 
 ```sql
 CREATE TABLE game
@@ -17,8 +17,8 @@ CREATE TABLE game
     venue       VARCHAR(100) NULL,
     home_score  INT      NULL,
     away_score  INT      NULL,
-    status      ENUM ('SCHEDULED', 'COMPLETED', 'CANCELED', 'POSTPONED') NOT NULL DEFAULT 'SCHEDULED',
-    game_number TINYINT  NOT NULL DEFAULT 1,
+    status      ENUM ('SCHEDULED', 'LIVE', 'COMPLETED', 'CANCELED', 'POSTPONED') NOT NULL DEFAULT 'SCHEDULED',
+    game_number INT      NOT NULL DEFAULT 1,
     PRIMARY KEY (id),
     UNIQUE KEY uq_game (season, game_type, game_date, home_team, away_team, game_number)
 );
@@ -40,14 +40,51 @@ CREATE TABLE game
 | `status` | 경기 상태 |
 | `game_number` | 더블헤더 구분 (1: 첫 번째, 2: 두 번째) |
 
-### Unique Key 구성
+### status 값
 
-`(season, game_type, game_date, home_team, away_team, game_number)`
-- 더블헤더: 같은 날 같은 매치업이 `game_number=1`, `game_number=2`로 구분
+| 값 | 의미 | 수집 출처 |
+|---|---|---|
+| `SCHEDULED` | 예정 | KBO 공식 (Track A) |
+| `LIVE` | 진행 중 | Naver API (Track C) |
+| `COMPLETED` | 종료 | KBO 공식 / Naver API |
+| `CANCELED` | 취소 | KBO 공식 / Naver API (Track B) |
+| `POSTPONED` | 연기 | KBO 공식 / Naver API (Track B) |
+
+## game_detail 테이블
+
+완료/진행 중 경기의 이닝별 스코어 및 R/H/E (Flyway V6 + V8):
+
+```sql
+CREATE TABLE game_detail
+(
+    game_id     BIGINT NOT NULL,
+    away_hits   INT    NOT NULL,
+    away_errors INT    NOT NULL,
+    home_hits   INT    NOT NULL,
+    home_errors INT    NOT NULL,
+    innings     JSON   NOT NULL,
+    PRIMARY KEY (game_id),
+    CONSTRAINT fk_game_detail_game FOREIGN KEY (game_id) REFERENCES game (id)
+);
+```
+
+### innings JSON 구조
+
+```json
+{
+  "away": [0, 0, 2, 0, 0, 0, 0, 3, 0],
+  "home": [1, 0, 1, 4, 0, 0, 0, 0]
+}
+```
+
+- `away[i]`: i+1회 원정팀 득점
+- `home[i]`: i+1회 홈팀 득점 (9회말 공격 없이 끝나면 배열 길이가 짧을 수 있음)
 
 ## upsert 전략
 
-MySQL `INSERT ... ON DUPLICATE KEY UPDATE` 사용 — bulk 단일 쿼리:
+### game 테이블 (Track A)
+
+MySQL `INSERT ... ON DUPLICATE KEY UPDATE` — bulk 단일 쿼리:
 
 ```python
 stmt = mysql_insert(GameEntity).values(rows)
@@ -61,38 +98,44 @@ stmt = stmt.on_duplicate_key_update(
 )
 ```
 
-upsert 기준 컬럼 (변경 없음): `season`, `game_type`, `game_date`, `home_team`, `away_team`, `game_number`
-업데이트 컬럼 (덮어쓰기): `game_time`, `venue`, `home_score`, `away_score`, `status`
+### game 상태 업데이트 (Track B/C)
 
-## kbo-crawler GameEntity (SQLAlchemy)
+Naver API 응답 기준으로 오늘 경기만 UPDATE:
 
 ```python
-class GameEntity(Base):
-    __tablename__ = "game"
-    __table_args__ = (
-        UniqueConstraint("season", "game_type", "game_date",
-                         "home_team", "away_team", "game_number", name="uq_game"),
-    )
-    id:          Mapped[int]       # PK, autoincrement
-    season:      Mapped[int]       # SmallInteger
-    game_type:   Mapped[GameType]  # Enum
-    game_date:   Mapped[date]
-    game_time:   Mapped[time|None]
-    home_team:   Mapped[str]       # TEAM_ENUM
-    away_team:   Mapped[str]       # TEAM_ENUM
-    venue:       Mapped[str|None]
-    home_score:  Mapped[int|None]
-    away_score:  Mapped[int|None]
-    status:      Mapped[GameStatus]
-    game_number: Mapped[int]       # SmallInteger, default=1
+UPDATE game
+SET status = :status, home_score = :home_score, away_score = :away_score
+WHERE game_date = :game_date
+  AND home_team = :home_team
+  AND away_team = :away_team
+  AND game_number = :game_number
 ```
+
+### game_detail (Track C)
+
+```python
+stmt = mysql_insert(GameDetailEntity).values(game_id=game_id, **detail)
+stmt = stmt.on_duplicate_key_update(
+    away_hits=stmt.inserted.away_hits,
+    away_errors=stmt.inserted.away_errors,
+    home_hits=stmt.inserted.home_hits,
+    home_errors=stmt.inserted.home_errors,
+    innings=stmt.inserted.innings,
+)
+```
+
+## BaseLog Flyway 마이그레이션 이력
+
+| 버전 | 내용 |
+|---|---|
+| V4 | game 테이블 생성 |
+| V5 | no-op (game_number는 V4에 포함됨) |
+| V6 | game.status에 LIVE 추가, game_detail 테이블 생성 |
+| V7 | game.game_number SMALLINT → INT |
+| V8 | game_detail 컬럼 TINYINT → INT |
 
 ## BaseLog 연동
 
 kbo-crawler와 BaseLog는 동일한 MySQL DB를 공유:
 - kbo-crawler → SQLAlchemy로 직접 write
 - BaseLog → Spring Data JPA로 read
-
-BaseLog 마이그레이션 파일:
-- `V4__add_game_schedule.sql` — game 테이블 생성
-- `V5__add_game_number.sql` — game_number 컬럼 추가 및 uq_game 재설정

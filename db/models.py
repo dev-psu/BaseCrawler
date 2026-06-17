@@ -1,5 +1,5 @@
 from datetime import date, time
-from sqlalchemy import Date, Enum, Integer, SmallInteger, String, Time, UniqueConstraint
+from sqlalchemy import Date, Enum, ForeignKey, Integer, JSON, SmallInteger, String, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from db.connection import Base
 from models.game import GameStatus, GameType
@@ -27,4 +27,15 @@ class GameEntity(Base):
     home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[GameStatus] = mapped_column(Enum(GameStatus), nullable=False, default=GameStatus.SCHEDULED)
-    game_number: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    game_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class GameDetailEntity(Base):
+    __tablename__ = "game_detail"
+
+    game_id: Mapped[int] = mapped_column(Integer, ForeignKey("game.id"), primary_key=True)
+    away_hits: Mapped[int] = mapped_column(Integer, nullable=False)
+    away_errors: Mapped[int] = mapped_column(Integer, nullable=False)
+    home_hits: Mapped[int] = mapped_column(Integer, nullable=False)
+    home_errors: Mapped[int] = mapped_column(Integer, nullable=False)
+    innings: Mapped[dict] = mapped_column(JSON, nullable=False)

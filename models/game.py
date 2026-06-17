@@ -11,6 +11,7 @@ class GameType(str, Enum):
 
 class GameStatus(str, Enum):
     SCHEDULED = "SCHEDULED"
+    LIVE = "LIVE"
     COMPLETED = "COMPLETED"
     CANCELED = "CANCELED"
     POSTPONED = "POSTPONED"
